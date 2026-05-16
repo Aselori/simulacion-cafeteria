@@ -7,7 +7,7 @@ Modelado y Simulación de Sistemas Dinámicos
 Tres variables estocásticas:
   1. Tiempo entre llegadas individuales ~ Exp(λ)   [Mersenne Twister MT19937]
   2. Tiempo de servicio por persona     ~ Exp(μ)   [MRG/FMRG k=2]
-  3. Duración de vacación del servidor   ~ Exp(θ)   [LCG]
+  3. Duración de vacación del servidor   ~ Exp(θ)   [MCG — Generador de Lehmer]
 """
 
 import math
@@ -58,10 +58,11 @@ class MersenneTwister:
 
 
 # ============================================================================
-# PRNG 2: Generador Congruencial Lineal (LCG) — Deng y Lin (2000)
+# PRNG 2: Generador Congruencial Multiplicativo (MCG / Lehmer) — Deng y Lin (2000)
+# Caso multiplicativo (C=0) del congruencial lineal. Período: 2^31 - 2.
 # ============================================================================
 
-class LCG:
+class MCG:
     A = 16807
     M = 2147483647
 
@@ -76,6 +77,9 @@ class LCG:
 
     def random(self) -> float:
         return self.next_int() / self.M
+
+
+LCG = MCG
 
 
 # ============================================================================
@@ -123,7 +127,7 @@ def gen_service_time(rng: MRG, mu: float) -> float:
     return -math.log(u) / mu
 
 
-def gen_vacation_time(rng: LCG, theta: float) -> float:
+def gen_vacation_time(rng: MCG, theta: float) -> float:
     u = rng.random()
     if u == 0.0:
         u = 1e-15
@@ -172,11 +176,11 @@ ESTADO_OCUPADO = 1
 ESTADO_VACACION = 2
 
 
-def simular(lam, mu, theta, t_sim, seed_mt, seed_lcg, seed_mrg1, seed_mrg2,
+def simular(lam, mu, theta, t_sim, seed_mt, seed_mcg, seed_mrg1, seed_mrg2,
             t_warmup=0.0, trace_eventos=0):
     rng_llegadas = MersenneTwister(seed_mt)
     rng_servicio = MRG(seed_mrg1, seed_mrg2)
-    rng_vacacion = LCG(seed_lcg)
+    rng_vacacion = MCG(seed_mcg)
 
     reloj = 0.0
     estado_servidor = ESTADO_LIBRE
@@ -363,11 +367,11 @@ def ejecutar_replicas(lam, mu, theta, t_sim, t_warmup, n_replicas=10,
 
     for r in range(n_replicas):
         s_mt = master.next_int()
-        s_lcg = master.next_int() % (LCG.M - 1) + 1
+        s_mcg = master.next_int() % (MCG.M - 1) + 1
         s_mrg1 = master.next_int() % (MRG.P - 1) + 1
         s_mrg2 = master.next_int() % (MRG.P - 1) + 1
 
-        sim = simular(lam, mu, theta, t_sim, s_mt, s_lcg, s_mrg1, s_mrg2,
+        sim = simular(lam, mu, theta, t_sim, s_mt, s_mcg, s_mrg1, s_mrg2,
                       t_warmup, trace_eventos if r == 0 else 0)
         resultados.append(sim)
 
@@ -429,7 +433,7 @@ def ejecutar_replicas(lam, mu, theta, t_sim, t_warmup, n_replicas=10,
 # Prueba Chi-Cuadrado de bondad de ajuste
 # ============================================================================
 
-def chi_cuadrado_exp(datos, tasa, num_bins=10):
+def chi_cuadrado_exp(datos, tasa, num_bins=6):
     n = len(datos)
     if n == 0:
         return 0, 0, False, [], 0, []
@@ -597,26 +601,26 @@ def reporte_completo(sim, analitico, lam, mu, theta, t_sim, t_warmup, seeds,
     _print("  └──────┴──────────────────┴──────────────────┘")
     _print()
 
-    _print("  ┌─ PRNG 3: Generador Congruencial Lineal (LCG) ───────────────┐")
+    _print("  ┌─ PRNG 3: Generador Congruencial Multiplicativo (MCG / Lehmer) ┐")
     _print("  │  Fuente: Deng y Lin (2000)                                   │")
     _print("  │  Asignado a: Duración de vacación del servidor               │")
-    _print("  │  Período: m - 1 = 2,147,483,646                             │")
-    _print(f"  │  Semilla: {seeds['lcg']:<50d}│")
+    _print("  │  Período: 2^31 - 2 = 2,147,483,646                          │")
+    _print(f"  │  Semilla: {seeds['mcg']:<50d}│")
     _print("  │                                                              │")
-    _print("  │  Recurrencia (multiplicativo, C=0):                          │")
+    _print("  │  Recurrencia (multiplicativo puro, C=0):                     │")
     _print("  │  X_i = (16807 · X_{i-1}) mod (2^31 - 1)                     │")
     _print("  │  U_i = X_i / (2^31 - 1)                                     │")
     _print("  └──────────────────────────────────────────────────────────────┘")
     _print()
 
-    lcg_demo = LCG(seeds["lcg"])
+    mcg_demo = MCG(seeds["mcg"])
     _print("  Primeros 10 números uniformes generados:")
     _print("  ┌──────┬──────────────────┬──────────────────┐")
     _print("  │  i   │     X_i          │     U_i          │")
     _print("  ├──────┼──────────────────┼──────────────────┤")
     for i in range(10):
-        xi = lcg_demo.next_int()
-        ui = xi / LCG.M
+        xi = mcg_demo.next_int()
+        ui = xi / MCG.M
         _print(f"  │  {i+1:2d}  │  {xi:>14d}  │     {ui:.10f}   │")
     _print("  └──────┴──────────────────┴──────────────────┘")
     _print()
@@ -665,14 +669,14 @@ def reporte_completo(sim, analitico, lam, mu, theta, t_sim, t_warmup, seeds,
     _print("  VARIABLE 3: Duración de vacación ~ Exp(θ)")
     _print(f"  Fórmula: V = -(1/θ) · ln(U) = -(1/{theta}) · ln(U)")
     _print()
-    _print("  Ejemplo paso a paso con los primeros 5 valores del LCG:")
+    _print("  Ejemplo paso a paso con los primeros 5 valores del MCG:")
     _print("  ┌──────┬──────────────┬────────────────────────────┬────────────┐")
-    _print("  │  i   │  U_i (LCG)   │  Cálculo                   │  V_i (min) │")
+    _print("  │  i   │  U_i (MCG)   │  Cálculo                   │  V_i (min) │")
     _print("  ├──────┼──────────────┼────────────────────────────┼────────────┤")
 
-    lcg_demo2 = LCG(seeds["lcg"])
+    mcg_demo2 = MCG(seeds["mcg"])
     for i in range(5):
-        u = lcg_demo2.random()
+        u = mcg_demo2.random()
         v = -math.log(u) / theta
         _print(f"  │  {i+1:2d}  │  {u:.10f}│  -(1/{theta})·ln({u:.6f})  │  {v:8.4f}   │")
     _print("  └──────┴──────────────┴────────────────────────────┴────────────┘")
@@ -735,9 +739,9 @@ def reporte_completo(sim, analitico, lam, mu, theta, t_sim, t_warmup, seeds,
     _print(f"  PRUEBA 1: Tiempo entre llegadas ~ Exp(λ={lam})")
     _print(f"  Muestra: {n_test} valores generados con MT19937")
     _print(f"  Media teórica: {1/lam:.4f} min | Media observada: {sum(llegadas_test)/len(llegadas_test):.4f} min")
-    _print(f"  Bins equiprobables: 10 | Grados de libertad: 8")
+    _print(f"  Bins equiprobables: 6 | Grados de libertad: 4")
     _print(f"  χ² calculado = {chi2:.4f}")
-    _print(f"  χ² crítico (α=0.05, gl=8) = {chi2_c:.4f}")
+    _print(f"  χ² crítico (α=0.05, gl=4) = {chi2_c:.4f}")
     _print(f"  Resultado: {'NO SE RECHAZA H₀ ✓' if acepta else 'SE RECHAZA H₀ ✗'} — ", end="")
     _print(f"{'La distribución exponencial es un buen ajuste' if acepta else 'El ajuste no es adecuado'}")
     _print()
@@ -750,19 +754,19 @@ def reporte_completo(sim, analitico, lam, mu, theta, t_sim, t_warmup, seeds,
     _print(f"  Muestra: {n_test} valores generados con MRG/FMRG")
     _print(f"  Media teórica: {1/mu:.4f} min | Media observada: {sum(servicio_test)/len(servicio_test):.4f} min")
     _print(f"  χ² calculado = {chi2_s:.4f}")
-    _print(f"  χ² crítico (α=0.05, gl=8) = {chi2_cs:.4f}")
+    _print(f"  χ² crítico (α=0.05, gl=4) = {chi2_cs:.4f}")
     _print(f"  Resultado: {'NO SE RECHAZA H₀ ✓' if acepta_s else 'SE RECHAZA H₀ ✗'}")
     _print()
 
-    lcg_test = LCG(seeds["lcg"])
-    vacacion_test = [gen_vacation_time(lcg_test, theta) for _ in range(n_test)]
+    mcg_test = MCG(seeds["mcg"])
+    vacacion_test = [gen_vacation_time(mcg_test, theta) for _ in range(n_test)]
     chi2_v, chi2_cv, acepta_v, _, _, _ = chi_cuadrado_exp(vacacion_test, theta)
 
     _print(f"  PRUEBA 3: Duración de vacación ~ Exp(θ={theta})")
-    _print(f"  Muestra: {n_test} valores generados con LCG")
+    _print(f"  Muestra: {n_test} valores generados con MCG")
     _print(f"  Media teórica: {1/theta:.4f} min | Media observada: {sum(vacacion_test)/len(vacacion_test):.4f} min")
     _print(f"  χ² calculado = {chi2_v:.4f}")
-    _print(f"  χ² crítico (α=0.05, gl=8) = {chi2_cv:.4f}")
+    _print(f"  χ² crítico (α=0.05, gl=4) = {chi2_cv:.4f}")
     _print(f"  Resultado: {'NO SE RECHAZA H₀ ✓' if acepta_v else 'SE RECHAZA H₀ ✗'}")
     _print()
 
@@ -932,7 +936,7 @@ def reporte_completo(sim, analitico, lam, mu, theta, t_sim, t_warmup, seeds,
     _print("  ├────────────────────────────┼──────────────────────────┼────────────────────┤")
     _print("  │ Tiempo entre llegadas      │ Mersenne Twister MT19937 │ Matsumoto (1998)   │")
     _print("  │ Tiempo de servicio         │ MRG/FMRG (k=2)          │ Deng y Lin (2000)  │")
-    _print("  │ Duración de vacación       │ LCG multiplicativo       │ Deng y Lin (2000)  │")
+    _print("  │ Duración de vacación       │ MCG (Lehmer)             │ Deng y Lin (2000)  │")
     _print("  └────────────────────────────┴──────────────────────────┴────────────────────┘")
     _print()
 
@@ -947,18 +951,24 @@ def reporte_completo(sim, analitico, lam, mu, theta, t_sim, t_warmup, seeds,
 # ============================================================================
 
 if __name__ == "__main__":
-    LAM = 0.5
-    MU = 0.67
-    THETA = 0.2
-    T_SIM = 10_000
-    T_WARMUP = 500
+    # Parámetros del sistema (§3.2: cafetería universitaria, hora pico 12:30–14:30)
+    LAM = 0.5      # llegadas/min  (1 cliente cada 2 min en promedio)
+    MU = 0.67      # servicios/min (1.49 min de servicio en promedio)
+    THETA = 0.2    # retornos/min  (5 min de vacación en promedio)
+
+    # Estrategia de simulación: se mide el turno completo (hora pico 12:30–14:30,
+    # extendido a 4 horas). No se descarta período de calentamiento porque el
+    # objetivo es caracterizar el turno transitorio, no el régimen estacionario:
+    # la fila inicia vacía igual que en la operación real.
+    T_SIM = 240    # 4 horas simuladas por réplica
+    T_WARMUP = 0   # sin warm-up: se contabiliza el turno completo
 
     SEED_MT = 19937
-    SEED_LCG = 48271
+    SEED_MCG = 48271
     SEED_MRG1 = 31415
     SEED_MRG2 = 92653
 
-    seeds = {"mt": SEED_MT, "lcg": SEED_LCG, "mrg1": SEED_MRG1, "mrg2": SEED_MRG2}
+    seeds = {"mt": SEED_MT, "mcg": SEED_MCG, "mrg1": SEED_MRG1, "mrg2": SEED_MRG2}
 
     analitico = calcular_analitico(LAM, MU, THETA)
 
@@ -970,7 +980,7 @@ if __name__ == "__main__":
         print(" ≥ 1 ✗ — SISTEMA INESTABLE")
 
     print(f"  Ejecutando simulación individual ({T_SIM:,} minutos simulados)...")
-    resultado = simular(LAM, MU, THETA, T_SIM, SEED_MT, SEED_LCG, SEED_MRG1, SEED_MRG2,
+    resultado = simular(LAM, MU, THETA, T_SIM, SEED_MT, SEED_MCG, SEED_MRG1, SEED_MRG2,
                         T_WARMUP, trace_eventos=20)
     print("  Simulación completada.")
 
