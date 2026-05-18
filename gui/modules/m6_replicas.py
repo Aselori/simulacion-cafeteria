@@ -1,4 +1,12 @@
-"""Módulo 6 — Réplicas e intervalos de confianza al 95 %."""
+"""Módulo 6 — Réplicas e intervalos de confianza al 95 %.
+
+Renderiza la tabla de IC para las cinco métricas y las cuatro pruebas de
+validación: cobertura de Wq, ley de Little (L y Lq) y precisión de ρ.
+
+Este módulo sobrescribe `mount` (en vez de `render`) porque tiene tres
+estados visuales posibles: pendiente, desactivado (cuando run_replicas=False)
+y renderizado.
+"""
 
 import customtkinter as ctk
 
@@ -8,6 +16,12 @@ from .base import Module
 
 
 class ModReplicas(Module):
+    """Validación estadística del simulador con 10 réplicas independientes.
+
+    La pill del header muestra "X/4 pruebas pasan" — feedback inmediato del
+    estado de la validación sin tener que leer la tabla completa.
+    """
+
     number = 4
     title = "Réplicas e intervalos de confianza (95 %)"
     subtitle = ("Diez ejecuciones independientes producen una distribución de cada "
@@ -15,6 +29,9 @@ class ModReplicas(Module):
     needs_simulation = True
 
     def mount(self, state):
+        # Tres estados: (1) sin simulación → placeholder genérico, (2) con
+        # simulación pero usuario desactivó réplicas → mensaje explicativo,
+        # (3) con réplicas → render completo.
         if state.sim is None:
             self.header.pill.set("pending")
             self._placeholder()
@@ -175,6 +192,9 @@ class ModReplicas(Module):
                      muted=True)
 
     def _check_row(self, label, ok, detail, note):
+        """Fila visual de una prueba: badge pasa/falla + label + detalle
+        numérico + nota explicativa debajo. Usado para las cuatro pruebas
+        de validación."""
         card = Card(self.body, fg_color=t.BG_SOFT)
         card.pack(fill="x", pady=(0, t.PAD_XS))
 

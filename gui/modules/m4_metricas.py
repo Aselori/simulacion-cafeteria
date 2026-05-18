@@ -1,4 +1,9 @@
-"""Módulo 4 — Métricas de la simulación: tabla Sim vs Analítico."""
+"""Módulo 4 — Métricas de la simulación: tabla Sim vs Analítico.
+
+Este es el módulo "headline" — el resultado principal del experimento. Por
+eso aparece en posición 2 en la pantalla (módulos están ordenados por
+relevancia para el usuario, no por orden lógico interno).
+"""
 
 import math
 
@@ -10,6 +15,9 @@ from .base import Module
 
 
 class ModMetricas(Module):
+    """Tabla central de cinco filas: ρ, L, Lq, W, Wq, con el error porcentual
+    coloreado por umbral (verde<5%, ámbar<15%, rojo si mayor)."""
+
     number = 2
     title = "Métricas de la simulación vs. analítico"
     subtitle = ("Comparación punto a punto de las cinco métricas. Un error bajo "
@@ -17,6 +25,7 @@ class ModMetricas(Module):
     needs_simulation = True
 
     def render(self, state):
+        # `sim` viene del worker; `a` (analítico) lo pre-calcula la App.
         sim, a = state.sim, state.analitico
 
         table = Card(self.body, fg_color=t.BG_SOFT)
@@ -43,10 +52,15 @@ class ModMetricas(Module):
         ]
         errs = []
         for name, s_val, a_val in rows:
+            # Si el valor analítico es 0 o infinito (sistema inestable) el
+            # porcentaje no está definido: marcamos guion y no contribuye al
+            # promedio.
             if a_val != 0 and math.isfinite(a_val):
                 err_pct = abs(s_val - a_val) / a_val * 100
                 errs.append(err_pct)
                 err_str = f"{err_pct:.2f} %"
+                # Semáforo: 5/15% son convenciones del curso, no umbrales
+                # estadísticos formales.
                 err_color = (t.SUCCESS if err_pct < 5
                              else (t.WARN if err_pct < 15 else t.DANGER))
             else:

@@ -11,14 +11,21 @@ from .components import CompactField
 
 
 class TopBar(ctk.CTkFrame):
+    """Cinta superior con dos filas: parámetros + botón de simular en la
+    primera, semillas + indicador de ρ en la segunda.
+
+    El indicador de ρ se actualiza en vivo conforme el usuario edita λ y μ,
+    sin necesidad de pulsar Simular — sirve como retroalimentación inmediata
+    de si el sistema sería estable con esos valores.
+    """
 
     def __init__(self, master, state, on_run):
         super().__init__(master, fg_color=t.BG, height=110)
         self.state = state
-        self._on_run = on_run
+        self._on_run = on_run            # callback que dispara la simulación
 
         self._build()
-        self._sync_rho()
+        self._sync_rho()                 # render inicial del indicador ρ
 
     def _build(self):
         # Row 1: rates + T_sim + run button
@@ -91,6 +98,11 @@ class TopBar(ctk.CTkFrame):
     # --------------------------------------------------------------
 
     def _sync_rho(self):
+        """Recalcula ρ = λ/μ en vivo y actualiza el color del indicador.
+
+        Llamado por las trace callbacks de λ, μ y θ; tolera entradas
+        inválidas (texto incompleto, división por cero) mostrando un guion.
+        """
         try:
             lam = float(self.f_lam.get())
             mu = float(self.f_mu.get())
@@ -101,14 +113,18 @@ class TopBar(ctk.CTkFrame):
                     text_color=t.SUCCESS,
                 )
             else:
+                # ρ ≥ 1: la cola explotaría — avisamos en rojo.
                 self.lbl_rho.configure(
                     text=f"ρ = {rho:.4f}    sistema inestable",
                     text_color=t.DANGER,
                 )
         except (ValueError, ZeroDivisionError):
+            # El usuario está editando y el campo está temporalmente vacío
+            # o no es número — mostramos un placeholder neutro.
             self.lbl_rho.configure(text="ρ = —", text_color=t.TEXT_SUBTLE)
 
     def _run_clicked(self):
+        """Handler del botón Simular. Valida y, si pasa, delega al callback."""
         if not self._commit_to_state():
             self.lbl_status.configure(text="Parámetros inválidos", text_color=t.DANGER)
             return
@@ -116,11 +132,20 @@ class TopBar(ctk.CTkFrame):
         self._on_run()
 
     def _commit_to_state(self) -> bool:
+        """Lee los widgets, valida y vuelca al `SimulationState` compartido.
+
+        Devuelve True si todo es válido; False si algún campo no parsea o si
+        algún parámetro no es estrictamente positivo (λ=0, etc., no tienen
+        sentido en este modelo).
+        """
         try:
             lam = float(self.f_lam.get())
             mu = float(self.f_mu.get())
             theta = float(self.f_theta.get())
             t_sim = float(self.f_tsim.get())
+            # Las cuatro tasas y T deben ser estrictamente positivas: la
+            # transformada inversa exponencial diverge si la tasa es 0 o
+            # negativa, y T ≤ 0 no permite simular nada.
             assert lam > 0 and mu > 0 and theta > 0 and t_sim > 0
             self.state.lam = lam
             self.state.mu = mu
@@ -138,6 +163,8 @@ class TopBar(ctk.CTkFrame):
     # --------------------------------------------------------------
 
     def set_running(self, running: bool, status: str = ""):
+        """Cambia visualmente el estado de la barra entre "listo" y
+        "ejecutando". Llamado por la App al inicio y fin de cada corrida."""
         self.btn_run.configure(
             state="disabled" if running else "normal",
             text="Ejecutando..." if running else "Simular",

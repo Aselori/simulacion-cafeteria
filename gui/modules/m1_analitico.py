@@ -1,4 +1,9 @@
-"""Módulo 1 — Modelo analítico: fórmulas cerradas + sustitución + valores."""
+"""Módulo 1 — Modelo analítico: fórmulas cerradas + sustitución + valores.
+
+Renderiza las cinco métricas teóricas (ρ, Wq, W, Lq, L) con su fórmula,
+sustitución numérica y resultado. Si el sistema es inestable (ρ ≥ 1), muestra
+una advertencia y omite el cuerpo: las fórmulas divergen.
+"""
 
 import math
 
@@ -10,6 +15,11 @@ from .base import Module
 
 
 class ModAnalitico(Module):
+    """Primer módulo visible. No necesita simulación — se calcula al vuelo
+    con `calcular_analitico` y sirve como referencia para validar la
+    simulación más abajo en la página.
+    """
+
     number = 1
     title = "Modelo analítico (M/M/1 con vacaciones múltiples)"
     subtitle = ("Antes de simular, calculamos los valores exactos que predice la teoría. "
@@ -17,7 +27,9 @@ class ModAnalitico(Module):
     needs_simulation = False
 
     def render(self, state):
-        a = state.analitico  # precomputed at App level
+        # La App pre-computa `analitico` antes de montar cualquier módulo, así
+        # que aquí ya está listo sin necesidad de recalcularlo.
+        a = state.analitico
 
         # Top summary strip
         summary = Card(self.body, fg_color=t.BG_SOFT)
@@ -117,6 +129,13 @@ class ModAnalitico(Module):
         ).pack(fill="x", pady=(t.PAD_MD, 0))
 
     def _formula_row(self, name, formula, subst, value, unit, note):
+        """Renderiza una fila visual: nombre · fórmula simbólica · sustitución
+        numérica · valor calculado · nota explicativa.
+
+        Mantener las cuatro piezas (símbolo, fórmula, sustitución, número) en
+        la misma línea ayuda al lector a seguir el cálculo paso a paso sin
+        tener que cruzar referencias entre secciones.
+        """
         card = Card(self.body, fg_color=t.BG_SOFT)
         card.pack(fill="x", pady=(0, t.PAD_SM))
 

@@ -1,7 +1,8 @@
 """Módulo (apéndice) — Descripción formal del sistema simulado.
 
 Apéndice teórico: vive al final del scroll. Todo su contenido es colapsable
-por defecto para no robar espacio al resultado principal.
+por defecto para no robar espacio al resultado principal. No depende de la
+simulación — se renderiza igual antes y después de pulsar Simular.
 """
 
 from .. import theme as t
@@ -10,6 +11,13 @@ from .base import Module
 
 
 class ModSistema(Module):
+    """Módulo 7 (último en orden visual): ficha académica del modelo.
+
+    Responde la pregunta "¿qué sistema estás simulando?" para la rúbrica:
+    mapeo cafetería↔modelo, notación de Kendall, supuestos y justificación
+    de por qué todas las variables son exponenciales.
+    """
+
     number = 7
     title = "Descripción del sistema (apéndice)"
     subtitle = ("Mapeo cafetería ↔ modelo, notación Kendall y supuestos. "
@@ -17,6 +25,8 @@ class ModSistema(Module):
     needs_simulation = False
 
     def render(self, state):
+        # Cuatro bloques colapsables independientes — el usuario abre el que
+        # le interese sin obligarse a leer todo el bloque teórico.
         # --- Mapeo (colapsable) ---
         tb_map = TechBlock(self.body, "Mapeo cafetería ↔ modelo")
         tb_map.pack(fill="x", pady=(0, t.PAD_SM))

@@ -1,4 +1,13 @@
-"""Módulo 3 — Motor de eventos discretos: descripción del algoritmo + traza."""
+"""Módulo 3 — Motor de eventos discretos: descripción del algoritmo + traza.
+
+Renderiza:
+  - resumen de contadores (eventos, llegadas, atendidos, vacaciones)
+  - leyenda con la descripción de los tres tipos de evento
+  - traza tabular de los primeros 25 eventos procesados por la simulación
+  - fichas técnicas plegables: pseudocódigo, variables, estimadores, etc.
+
+Requiere `sim` en el estado: sin simulación no hay traza que mostrar.
+"""
 
 import customtkinter as ctk
 
@@ -7,6 +16,9 @@ from ..components import Card, ExplainBox, TechBlock, Bullets
 from .base import Module
 
 
+# Texto descriptivo por tipo de evento — se muestra en la leyenda. Las claves
+# coinciden con los strings que produce `simulacion_cafeteria.simular` en la
+# traza, así que no hay que mapear nada.
 EVENT_DESCRIPTIONS = {
     "LLEGADA": ("Un cliente llega al sistema. Si el servidor está libre lo atiende "
                 "de inmediato; si está ocupado o de vacaciones, entra a la cola. "
@@ -18,6 +30,8 @@ EVENT_DESCRIPTIONS = {
                  "múltiples — ésta es la clave del modelo)."),
 }
 
+# Color por tipo de evento — usado tanto en la leyenda como en la traza para
+# que el lector identifique de un vistazo el tipo de cada fila.
 EVENT_COLOR = {
     "LLEGADA": t.ACCENT,
     "FIN_SERV": t.SUCCESS,
@@ -156,6 +170,12 @@ class ModEventos(Module):
         ).pack(fill="x", pady=(t.PAD_MD, 0))
 
     def _trace_table(self, traza):
+        """Tabla minimalista con la traza de los primeros N eventos.
+
+        Construida widget a widget (no usa Treeview) para mantener el mismo
+        look-and-feel del resto de cards. Eficiente para N ≤ ~50 — más allá
+        se notaría el costo de tantos CTkLabel individuales.
+        """
         table = Card(self.body, fg_color=t.BG_SOFT)
         table.pack(fill="x")
 

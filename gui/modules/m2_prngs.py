@@ -1,4 +1,13 @@
-"""Módulo 2 — Generadores pseudoaleatorios: 3 sub-cards con muestras y chi²."""
+"""Módulo 2 — Generadores pseudoaleatorios: 3 sub-cards con muestras y chi².
+
+Para cada uno de los tres PRNGs muestra:
+  - identificación (nombre, fuente bibliográfica, semilla)
+  - primeras 8 muestras transformadas (vista rápida)
+  - histograma vs. densidad teórica
+  - resultado de la prueba χ² de bondad de ajuste a Exp(tasa)
+
+No necesita simulación porque sólo evalúa los PRNGs, no el sistema de colas.
+"""
 
 import math
 import tkinter as tk
@@ -16,7 +25,10 @@ from ..components import Card, ExplainBox, TechBlock, Bullets
 from .base import Module
 
 
+# Tamaño de la muestra para los tests estadísticos. 1000 da suficiente poder
+# al χ² sin ralentizar el re-render perceptiblemente.
 N_MUESTRAS = 1000
+# Cuántas muestras crudas mostrar en la vista rápida — sólo informativo.
 N_PREVIEW = 8
 
 
@@ -28,13 +40,19 @@ class ModPRNGs(Module):
     needs_simulation = False
 
     def render(self, state):
+        # Cada PRNG se instancia con su propia semilla para que el histograma
+        # se construya con muestras "frescas", reproducibles desde la semilla.
         rng_lleg = MersenneTwister(state.seed_mt)
         rng_serv = MRG(state.seed_mrg1, state.seed_mrg2)
         rng_vac = MCG(state.seed_lcg)
 
+        # Generamos N_MUESTRAS valores ya transformados a Exp(tasa) — son los
+        # que realmente alimentan la simulación, no los uniformes crudos.
         muestras_lleg = [gen_interarrival(rng_lleg, state.lam) for _ in range(N_MUESTRAS)]
         muestras_serv = [gen_service_time(rng_serv, state.mu) for _ in range(N_MUESTRAS)]
         muestras_vac = [gen_vacation_time(rng_vac, state.theta) for _ in range(N_MUESTRAS)]
+        # Cache en el estado por si otro módulo quiere reutilizarlas (evita
+        # regenerarlas dos veces con el mismo costo).
         state.prng_samples = {
             "llegadas": muestras_lleg, "servicio": muestras_serv, "vacacion": muestras_vac,
         }
@@ -124,6 +142,11 @@ class ModPRNGs(Module):
         ).pack(fill="x", pady=(t.PAD_MD, 0))
 
     def _sub_card(self, name, ref, uses, tasa_name, tasa, muestras, seed_text):
+        """Construye la tarjeta para un PRNG individual.
+
+        Devuelve True si el χ² no rechaza H₀ (ajuste exponencial aceptable).
+        La App agrega un OK global combinando los tres resultados.
+        """
         card = Card(self.body, fg_color=t.BG_SOFT)
         card.pack(fill="x", pady=(0, t.PAD_SM))
 
@@ -183,23 +206,34 @@ class ModPRNGs(Module):
         return ok
 
     def _histogram(self, master, muestras, tasa, n_bins=20):
+        """Histograma de las muestras + curva teórica f(x) = λ e^(−λx).
+
+        Se usa Tk Canvas (no matplotlib) para mantener cero dependencias
+        externas; la gráfica es compacta (820×70) y suficientemente
+        informativa para ver el "ajuste a ojo" entre barras y curva.
+        """
         w, h = 820, 70
         canvas = tk.Canvas(master, width=w, height=h, bg=t.BG_SOFT, highlightthickness=0)
         if not muestras:
             return canvas
 
+        # Recortar la cola al percentil 95: las exponenciales tienen una cola
+        # larga que distorsiona la escala del histograma si se incluye toda.
         sorted_m = sorted(muestras)
         x_cap = sorted_m[int(0.95 * len(sorted_m))] or max(muestras)
         if x_cap <= 0:
             return canvas
 
+        # Conteo por bin.
         bin_w = x_cap / n_bins
         counts = [0] * n_bins
         for x in muestras:
+            # Las muestras > x_cap caen al último bin (clip), evitando perderlas.
             b = min(int(x / bin_w), n_bins - 1)
             counts[b] += 1
-        max_count = max(counts) or 1
+        max_count = max(counts) or 1     # divisor seguro si todos los bins están vacíos
 
+        # Dibujar las barras (rectángulos sin borde).
         bar_w = w / n_bins
         for i, c in enumerate(counts):
             bar_h = (c / max_count) * (h - 4)
@@ -208,6 +242,8 @@ class ModPRNGs(Module):
                 fill=t.ACCENT_SOFT, outline="",
             )
 
+        # Superponer la densidad teórica escalada al mismo eje que el conteo.
+        # Multiplicar por bin_w · N convierte f(x) en frecuencia esperada por bin.
         points = []
         for px in range(0, int(w), 2):
             x_val = (px / w) * x_cap

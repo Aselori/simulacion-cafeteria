@@ -1,4 +1,9 @@
-"""Reusable widgets: Card, FormField, ExplainBox, ModuleHeader, StatusPill."""
+"""Reusable widgets: Card, FormField, ExplainBox, ModuleHeader, StatusPill.
+
+Vocabulario visual del proyecto. Toda widget que aparece en más de un módulo
+vive aquí — los módulos sólo deberían componerlas, no inventar nuevas. Si un
+estilo cambia (color, padding, tipografía), se cambia aquí y se propaga.
+"""
 
 import customtkinter as ctk
 
@@ -19,7 +24,12 @@ class Card(ctk.CTkFrame):
 
 
 class FormField(ctk.CTkFrame):
-    """Label + entry with optional helper text below."""
+    """Label + entry with optional helper text below.
+
+    `on_change` se dispara con cada tecleo (vía `trace_add('write', ...)`),
+    no al perder el foco. Útil para indicadores que deben actualizarse en
+    vivo, como el ρ de la TopBar.
+    """
 
     def __init__(self, master, label, value="", helper="", width=120, on_change=None):
         super().__init__(master, fg_color="transparent")
@@ -220,6 +230,10 @@ class TechBlock(Card):
 
     Use as a context container — pack widgets inside `self.inner`.
     Helpers: `add_text`, `add_mono`, `add_subtitle`, `add_bullets`.
+
+    Empieza colapsado por defecto (`collapsed=True`) para que la página no se
+    sienta abrumadora: el material teórico denso se esconde y el usuario lo
+    expande sólo si le interesa.
     """
 
     def __init__(self, master, title="Ficha técnica", collapsed=True):
@@ -227,7 +241,9 @@ class TechBlock(Card):
 
         self._collapsed = collapsed
 
-        # Clickable header strip
+        # Tira de encabezado clickable. Tres widgets (header, título, toggle)
+        # comparten el bind para que el área activa sea toda la fila, no sólo
+        # la etiqueta "[ ver ]".
         header = ctk.CTkFrame(self, fg_color=t.BG_NARRATOR, cursor="hand2")
         header.pack(fill="x", padx=t.PAD_MD, pady=(t.PAD_SM, 4))
 

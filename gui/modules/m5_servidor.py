@@ -1,4 +1,11 @@
-"""Módulo 5 — Estadísticas del servidor: fracciones ocupado / vacación / ocioso."""
+"""Módulo 5 — Estadísticas del servidor: fracciones ocupado / vacación / ocioso.
+
+Visualiza las tres áreas temporales acumuladas por la simulación:
+  - ρ      (área_ocupado / t_efectivo)
+  - 1 − ρ  típicamente equivale a fracción en vacación
+  - idle   debería ser ~0 en este modelo (servidor nunca está despierto sin
+            atender y sin haber salido de vacación)
+"""
 
 import customtkinter as ctk
 
@@ -8,6 +15,10 @@ from .base import Module
 
 
 class ModServidor(Module):
+    """Tres "stat cards" lado a lado + ficha técnica con el invariante y
+    PASTA. Sirve para auditar visualmente que la simulación cumple el
+    invariante ρ + ρ_vac + ρ_idle = 1."""
+
     number = 3
     title = "Estadísticas del servidor"
     subtitle = "Cómo distribuye el servidor su tiempo entre los tres estados posibles."
@@ -15,6 +26,8 @@ class ModServidor(Module):
 
     def render(self, state):
         sim = state.sim
+        # `max(0, ...)` protege contra errores de redondeo que pudieran dar
+        # un idle ligeramente negativo (ρ_sim + ρ_vac ≈ 1 con jitter de float).
         idle = max(0.0, 1 - sim["rho"] - sim["rho_vacacion"])
 
         wrap = ctk.CTkFrame(self.body, fg_color="transparent")

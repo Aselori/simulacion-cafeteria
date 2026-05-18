@@ -1,13 +1,21 @@
 """
-Simulación de un Sistema de Colas M/M/1 con Vacaciones Múltiples del Servidor
-Cafetería Universitaria — UANL
+Simulación de un Sistema de Colas M/M/1 con Vacaciones Múltiples del Servidor.
+Cafetería — Modelado y Simulación de Sistemas Dinámicos.
 
-Modelado y Simulación de Sistemas Dinámicos
+Tres variables aleatorias gobiernan el sistema, cada una con su propio PRNG
+implementado desde cero (sin usar `random` de la biblioteca estándar):
 
-Tres variables estocásticas:
   1. Tiempo entre llegadas individuales ~ Exp(λ)   [Mersenne Twister MT19937]
   2. Tiempo de servicio por persona     ~ Exp(μ)   [MRG/FMRG k=2]
-  3. Duración de vacación del servidor   ~ Exp(θ)   [MCG — Generador de Lehmer]
+  3. Duración de vacación del servidor  ~ Exp(θ)   [MCG — Generador de Lehmer]
+
+Asignar un PRNG distinto a cada variable garantiza independencia estadística
+entre los flujos: ningún número uniforme se reutiliza entre procesos.
+
+La simulación usa el esquema "next-event time advance" (avance al próximo
+evento) con un heap binario como agenda de eventos: en lugar de avanzar el
+reloj en pasos fijos Δt, salta directamente al instante del siguiente evento
+programado, lo que evita simular tiempo muerto.
 """
 
 import math
@@ -20,33 +28,55 @@ from collections import deque
 # ============================================================================
 
 class MersenneTwister:
-    N = 624
-    M = 397
-    MATRIX_A = 0x9908B0DF
-    UPPER_MASK = 0x80000000
-    LOWER_MASK = 0x7FFFFFFF
-    MASK32 = 0xFFFFFFFF
+    """Generador Mersenne Twister de 32 bits (MT19937).
+
+    Período: 2^19937 − 1 (de ahí el nombre). Equidistribución probada en
+    623 dimensiones a 32 bits, lo que lo hace muy superior a cualquier LCG
+    para simulaciones que consumen muchos uniformes por unidad de tiempo.
+
+    Estado interno: un vector `mt` de N=624 enteros de 32 bits, que se
+    "tuerce" (twist) en bloque cada vez que se han consumido los 624.
+    """
+
+    # Parámetros estructurales del MT19937 (NO modificar — definen el período).
+    N = 624                       # tamaño del vector de estado
+    M = 397                       # offset del "middle word" en la recurrencia
+    MATRIX_A = 0x9908B0DF         # coeficientes de la matriz de torsión
+    UPPER_MASK = 0x80000000       # bit más significativo (separa "upper" word)
+    LOWER_MASK = 0x7FFFFFFF       # 31 bits inferiores (separa "lower" word)
+    MASK32 = 0xFFFFFFFF           # máscara para forzar aritmética de 32 bits
 
     def __init__(self, seed: int):
+        # Inicialización por la recurrencia lineal estándar de Knuth/MT19937,
+        # que difunde los bits de la semilla por todo el vector de estado.
         self.mt = [0] * self.N
-        self.index = self.N
+        self.index = self.N       # `index >= N` fuerza un twist en la 1ª llamada
         self.mt[0] = seed & self.MASK32
         for i in range(1, self.N):
+            # Constante 1812433253 = ajuste de Knuth para buena difusión inicial.
             self.mt[i] = (1812433253 * (self.mt[i - 1] ^ (self.mt[i - 1] >> 30)) + i) & self.MASK32
 
     def _generate(self):
+        # "Twist": regenera los 624 enteros del vector de estado en una sola
+        # pasada usando la recurrencia matricial del MT. Una vez hecho, el
+        # generador puede entregar 624 enteros antes del próximo twist.
         for i in range(self.N):
+            # `y` combina el bit superior de mt[i] con los 31 inferiores de
+            # mt[i+1] — esto introduce la dependencia "cross-word".
             y = (self.mt[i] & self.UPPER_MASK) | (self.mt[(i + 1) % self.N] & self.LOWER_MASK)
             self.mt[i] = self.mt[(i + self.M) % self.N] ^ (y >> 1)
-            if y & 1:
-                self.mt[i] ^= self.MATRIX_A
+            if y & 1:                          # si el bit más bajo de y es 1,
+                self.mt[i] ^= self.MATRIX_A    # aplica los coeficientes de A.
         self.index = 0
 
     def next_int(self) -> int:
+        """Devuelve el siguiente entero pseudoaleatorio de 32 bits."""
         if self.index >= self.N:
             self._generate()
         y = self.mt[self.index]
         self.index += 1
+        # Tempering: cuatro XOR-shift que descorrelacionan los bits de salida.
+        # Sin esto el MT pasa peor las pruebas de aleatoriedad pese al período.
         y ^= y >> 11
         y ^= (y << 7) & 0x9D2C5680
         y ^= (y << 15) & 0xEFC60000
@@ -54,19 +84,31 @@ class MersenneTwister:
         return y & self.MASK32
 
     def random(self) -> float:
+        """Uniforme en [0, 1). Divide entre 2^32 (no entre 2^32 − 1) para
+        conservar la equidistribución entera."""
         return self.next_int() / 4294967296.0
 
 
 # ============================================================================
-# PRNG 2: Generador Congruencial Multiplicativo (MCG / Lehmer) — Deng y Lin (2000)
-# Caso multiplicativo (C=0) del congruencial lineal. Período: 2^31 - 2.
+# PRNG 2: Generador Congruencial Multiplicativo (MCG / Lehmer) — Deng-Lin (2000)
+# Caso multiplicativo (C=0) del congruencial lineal X_{i+1} = (A·X_i) mod M.
+# Período: M − 1 = 2^31 − 2 cuando A es raíz primitiva de M (primo).
 # ============================================================================
 
 class MCG:
-    A = 16807
-    M = 2147483647
+    """Generador de Lehmer / Park-Miller — multiplicativo puro.
+
+    Asignado a las duraciones de vacación. Su período (~2·10^9) es más que
+    suficiente para esta variable, que se consume sólo una vez por vacación
+    (mucho menos frecuentemente que llegadas o servicios).
+    """
+
+    A = 16807                   # 7^5 — multiplicador de Park-Miller (1988)
+    M = 2147483647              # 2^31 − 1, primo de Mersenne
 
     def __init__(self, seed: int):
+        # Seed must be in (0, M). El estado cero es absorbente: si X_i = 0,
+        # todos los siguientes son cero. Por eso se fuerza a 1 si llegara 0.
         self.x = seed % self.M
         if self.x == 0:
             self.x = 1
@@ -79,6 +121,8 @@ class MCG:
         return self.next_int() / self.M
 
 
+# Alias histórico: en el reporte académico el generador aparece como LCG, pero
+# técnicamente es MCG (C=0). Se conserva el alias para compatibilidad.
 LCG = MCG
 
 
@@ -87,11 +131,23 @@ LCG = MCG
 # ============================================================================
 
 class MRG:
-    P = 2147483647
-    ALPHA1 = 1071064
-    ALPHA2 = 2113664
+    """MRG de orden k=2 — combina dos retardos para obtener un período mucho
+    mayor que un MCG de un solo retardo.
+
+    Recurrencia:  X_i = (α₁ · X_{i-1} + α₂ · X_{i-2}) mod p
+
+    Período máximo: p² − 1 ≈ 4.6 × 10^18 cuando los coeficientes α₁, α₂ son
+    apropiados (Deng-Lin, 2000). Asignado a tiempos de servicio porque es la
+    variable que más se consume después de los arribos.
+    """
+
+    P = 2147483647              # mismo primo que el MCG: 2^31 − 1
+    ALPHA1 = 1071064            # coeficiente del retardo 1 (Deng-Lin)
+    ALPHA2 = 2113664            # coeficiente del retardo 2 (Deng-Lin)
 
     def __init__(self, seed1: int, seed2: int):
+        # Dos semillas independientes; ambas deben ser no-cero por la misma
+        # razón que en el MCG (estado cero absorbente).
         self.x_prev = seed1 % self.P
         self.x_prev2 = seed2 % self.P
         if self.x_prev == 0:
@@ -101,6 +157,7 @@ class MRG:
 
     def next_int(self) -> int:
         x_new = (self.ALPHA1 * self.x_prev + self.ALPHA2 * self.x_prev2) % self.P
+        # Desplaza la "ventana" de dos retardos: x_{-2} ← x_{-1},  x_{-1} ← nuevo.
         self.x_prev2 = self.x_prev
         self.x_prev = x_new
         return x_new
@@ -110,17 +167,21 @@ class MRG:
 
 
 # ============================================================================
-# Generación de variables aleatorias (transformada inversa)
+# Generación de variables aleatorias por transformada inversa.
+# Para X ~ Exp(λ), F⁻¹(U) = −ln(1−U)/λ ; como 1−U también es uniforme en (0,1),
+# se usa la forma equivalente más simple:  X = −ln(U)/λ.
 # ============================================================================
 
 def gen_interarrival(rng: MersenneTwister, lam: float) -> float:
+    """Tiempo entre dos llegadas consecutivas ~ Exp(λ)."""
     u = rng.random()
-    if u == 0.0:
+    if u == 0.0:                  # ln(0) = −∞ ; protección numérica.
         u = 1e-15
     return -math.log(u) / lam
 
 
 def gen_service_time(rng: MRG, mu: float) -> float:
+    """Duración de un servicio individual ~ Exp(μ)."""
     u = rng.random()
     if u == 0.0:
         u = 1e-15
@@ -128,6 +189,7 @@ def gen_service_time(rng: MRG, mu: float) -> float:
 
 
 def gen_vacation_time(rng: MCG, theta: float) -> float:
+    """Duración de una vacación del servidor ~ Exp(θ)."""
     u = rng.random()
     if u == 0.0:
         u = 1e-15
@@ -135,11 +197,17 @@ def gen_vacation_time(rng: MCG, theta: float) -> float:
 
 
 # ============================================================================
-# Fórmulas analíticas del modelo M/M/1 con vacaciones múltiples
-# Fuente: Haviv (2013), Teorema 4.9
+# Fórmulas analíticas del modelo M/M/1 con vacaciones múltiples.
+# Referencia: Haviv (2013), "Queues: A Course in Queueing Theory", Teorema 4.9
+# (descomposición exponencial para vacaciones múltiples exhaustivas).
 # ============================================================================
 
 def calcular_analitico(lam: float, mu: float, theta: float):
+    """Devuelve un diccionario con ρ, L, Lq, W, Wq y Wq_mm1 según la teoría.
+
+    Cuando ρ ≥ 1 el sistema es inestable: las cinco métricas divergen y se
+    devuelven como infinito. La GUI usa esto para mostrar una advertencia.
+    """
     rho = lam / mu
 
     if rho >= 1.0:
@@ -150,11 +218,15 @@ def calcular_analitico(lam: float, mu: float, theta: float):
             "estable": False,
         }
 
+    # Wq del M/M/1 puro (sin vacaciones).
     wq_mm1 = rho / (mu * (1 - rho))
+    # Descomposición de Takine-Hasegawa: la vacación añade en promedio
+    # E[V_res] = 1/θ a la espera, porque la propiedad sin memoria garantiza
+    # que el tiempo residual de una Exp(θ) también es Exp(θ).
     wq = wq_mm1 + 1.0 / theta
-    w = wq + 1.0 / mu
-    lq = lam * wq
-    l = lam * w
+    w = wq + 1.0 / mu             # añadir el servicio medio para obtener W
+    lq = lam * wq                 # ley de Little aplicada a la cola
+    l = lam * w                   # ley de Little aplicada al sistema
 
     return {
         "rho": rho, "L": l, "Lq": lq, "W": w, "Wq": wq,
@@ -164,50 +236,87 @@ def calcular_analitico(lam: float, mu: float, theta: float):
 
 
 # ============================================================================
-# Motor de Simulación de Eventos Discretos (DES)
+# Motor de Simulación de Eventos Discretos (DES).
 # ============================================================================
 
+# Códigos de evento. Se usan enteros (no strings) porque el heap los compara
+# como desempate cuando dos eventos ocurren en el mismo instante; usar enteros
+# evita comparaciones de cadena y es más rápido.
 EVENTO_LLEGADA = 0
 EVENTO_FIN_SERVICIO = 1
 EVENTO_FIN_VACACION = 2
 
-ESTADO_LIBRE = 0
-ESTADO_OCUPADO = 1
-ESTADO_VACACION = 2
+# Estados posibles del servidor.
+ESTADO_LIBRE = 0      # esperando, cola vacía y aún no salió de vacación
+ESTADO_OCUPADO = 1    # atendiendo a un cliente
+ESTADO_VACACION = 2   # fuera del mostrador (reponiendo, descanso, etc.)
 
 
 def simular(lam, mu, theta, t_sim, seed_mt, seed_mcg, seed_mrg1, seed_mrg2,
             t_warmup=0.0, trace_eventos=0):
+    """Ejecuta una corrida de la simulación de duración `t_sim` (minutos).
+
+    Parámetros
+    ----------
+    lam, mu, theta : tasas de llegada / servicio / retorno de vacación.
+    t_sim          : duración total simulada.
+    seed_*         : semillas independientes para cada PRNG.
+    t_warmup       : si > 0, las primeras `t_warmup` unidades se descartan
+                     para las estadísticas (no para los eventos en sí).
+    trace_eventos  : cuántos eventos detallar en la traza para depuración.
+
+    Devuelve un diccionario con las métricas observadas y, opcionalmente, la
+    traza inicial y snapshots periódicos para gráficas de convergencia.
+    """
+    # Un PRNG por flujo aleatorio — independencia entre llegadas, servicios y
+    # vacaciones.
     rng_llegadas = MersenneTwister(seed_mt)
     rng_servicio = MRG(seed_mrg1, seed_mrg2)
     rng_vacacion = MCG(seed_mcg)
 
+    # Estado del sistema.
     reloj = 0.0
     estado_servidor = ESTADO_LIBRE
-    cola = deque()
-    cliente_actual_llegada = 0.0
+    cola = deque()                   # FIFO; almacena el instante de llegada
+                                     # de cada cliente para calcular su espera
+    cliente_actual_llegada = 0.0     # instante de llegada del cliente que se
+                                     # está sirviendo (para calcular su W)
 
+    # Agenda de eventos (heap binario). Cada entrada es la tupla
+    # (instante, contador, tipo). El contador asegura un orden FIFO estable
+    # cuando dos eventos coinciden en el mismo instante.
     eventos = []
     contador_eventos = 0
 
+    # Acumuladores para estadísticas integrales en el tiempo.
+    # "Time-average" estimators: el promedio de cualquier variable de estado
+    # X(t) sobre [0,T] es (1/T) ∫₀ᵀ X(t) dt. Como X(t) es constante a trozos
+    # entre eventos, la integral es Σ X · Δt — eso es lo que acumulan las
+    # áreas siguientes.
     num_en_cola = 0
     num_en_sistema = 0
-    area_cola = 0.0
-    area_sistema = 0.0
-    area_ocupado = 0.0
-    area_vacacion = 0.0
-    total_espera = 0.0
+    area_cola = 0.0          # ∫ Lq(t) dt
+    area_sistema = 0.0       # ∫ L(t)  dt
+    area_ocupado = 0.0       # ∫ 1{servidor ocupado} dt  → ρ_sim
+    area_vacacion = 0.0      # ∫ 1{servidor en vacación} dt
+    total_espera = 0.0       # Σ tiempos de espera por cliente atendido
     total_tiempo_sistema = 0.0
     clientes_servidos = 0
     clientes_llegados = 0
     total_vacaciones = 0
 
-    t_inicio_stats = t_warmup
-    traza = []
+    t_inicio_stats = t_warmup        # antes de este instante no se cuenta
+    traza = []                       # registro humano-legible de los primeros
+                                     # eventos (para inspección/debug)
 
+    # Snapshots periódicos: capturan métricas acumuladas a lo largo de la
+    # corrida para que la GUI dibuje la curva de convergencia hacia el régimen
+    # estacionario.
     snapshots = []
-    snapshot_interval = t_sim / 20
+    snapshot_interval = t_sim / 20   # 20 puntos sobre la corrida
 
+    # Sembrar la agenda con la primera llegada — sin ella el bucle no
+    # arrancaría (sólo procesamos eventos que ya estén en el heap).
     t_primera = gen_interarrival(rng_llegadas, lam)
     heapq.heappush(eventos, (t_primera, contador_eventos, EVENTO_LLEGADA))
     contador_eventos += 1
@@ -215,14 +324,19 @@ def simular(lam, mu, theta, t_sim, seed_mt, seed_mcg, seed_mrg1, seed_mrg2,
     next_snapshot = snapshot_interval
     total_eventos_procesados = 0
 
+    # ----- Bucle principal de eventos -----
     while eventos:
         t_evento, _, tipo = heapq.heappop(eventos)
         if t_evento > t_sim:
-            break
+            break                    # paramos al cruzar el horizonte
 
+        # Antes de avanzar el reloj, acumulamos el "área bajo la curva" de las
+        # variables de estado durante el intervalo [reloj, t_evento). Sólo se
+        # cuenta lo que ocurre después del warm-up.
         if reloj >= t_inicio_stats:
             dt = t_evento - max(reloj, t_inicio_stats)
             if reloj < t_inicio_stats:
+                # Caso borde: el intervalo cruza el final del warm-up.
                 dt = t_evento - t_inicio_stats
             area_cola += num_en_cola * dt
             area_sistema += num_en_sistema * dt
@@ -232,10 +346,12 @@ def simular(lam, mu, theta, t_sim, seed_mt, seed_mcg, seed_mrg1, seed_mrg2,
         reloj = t_evento
         total_eventos_procesados += 1
 
+        # ---- LLEGADA de un cliente ----
         if tipo == EVENTO_LLEGADA:
             if reloj >= t_inicio_stats:
                 clientes_llegados += 1
 
+            # Guardar evento en la traza si todavía hay cupo.
             if trace_eventos > 0 and len(traza) < trace_eventos:
                 estado_str = {ESTADO_LIBRE: "Libre", ESTADO_OCUPADO: "Ocupado", ESTADO_VACACION: "Vacación"}
                 traza.append({
@@ -245,6 +361,7 @@ def simular(lam, mu, theta, t_sim, seed_mt, seed_mcg, seed_mrg1, seed_mrg2,
                 })
 
             if estado_servidor == ESTADO_LIBRE:
+                # Servidor disponible → servicio inmediato, espera = 0.
                 estado_servidor = ESTADO_OCUPADO
                 cliente_actual_llegada = reloj
                 num_en_sistema += 1
@@ -252,19 +369,24 @@ def simular(lam, mu, theta, t_sim, seed_mt, seed_mcg, seed_mrg1, seed_mrg2,
                 heapq.heappush(eventos, (reloj + s, contador_eventos, EVENTO_FIN_SERVICIO))
                 contador_eventos += 1
                 if reloj >= t_inicio_stats:
-                    total_espera += 0.0
+                    total_espera += 0.0  # explícito: este cliente no espera
             else:
+                # Servidor ocupado o de vacaciones → el cliente se forma.
                 cola.append(reloj)
                 num_en_cola += 1
                 num_en_sistema += 1
 
+            # Programar la próxima llegada (las llegadas son independientes
+            # del estado del servidor).
             t_sig = reloj + gen_interarrival(rng_llegadas, lam)
             heapq.heappush(eventos, (t_sig, contador_eventos, EVENTO_LLEGADA))
             contador_eventos += 1
 
+        # ---- FIN DE SERVICIO ----
         elif tipo == EVENTO_FIN_SERVICIO:
             if reloj >= t_inicio_stats:
                 clientes_servidos += 1
+                # W del cliente = momento de salida − momento de llegada.
                 total_tiempo_sistema += reloj - cliente_actual_llegada
 
             num_en_sistema -= 1
@@ -277,6 +399,7 @@ def simular(lam, mu, theta, t_sim, seed_mt, seed_mcg, seed_mrg1, seed_mrg2,
                 })
 
             if cola:
+                # Sigue habiendo gente → atender al primero de la fila.
                 t_llegada_sig = cola.popleft()
                 num_en_cola -= 1
                 cliente_actual_llegada = t_llegada_sig
@@ -286,11 +409,13 @@ def simular(lam, mu, theta, t_sim, seed_mt, seed_mcg, seed_mrg1, seed_mrg2,
                 heapq.heappush(eventos, (reloj + s, contador_eventos, EVENTO_FIN_SERVICIO))
                 contador_eventos += 1
             else:
+                # Cola vacía → servidor se va de vacación (modelo exhaustivo).
                 estado_servidor = ESTADO_VACACION
                 v = gen_vacation_time(rng_vacacion, theta)
                 heapq.heappush(eventos, (reloj + v, contador_eventos, EVENTO_FIN_VACACION))
                 contador_eventos += 1
 
+        # ---- FIN DE VACACIÓN ----
         elif tipo == EVENTO_FIN_VACACION:
             if reloj >= t_inicio_stats:
                 total_vacaciones += 1
@@ -303,6 +428,7 @@ def simular(lam, mu, theta, t_sim, seed_mt, seed_mcg, seed_mrg1, seed_mrg2,
                 })
 
             if cola:
+                # El servidor regresa y encuentra fila → atiende.
                 estado_servidor = ESTADO_OCUPADO
                 t_llegada_sig = cola.popleft()
                 num_en_cola -= 1
@@ -313,10 +439,13 @@ def simular(lam, mu, theta, t_sim, seed_mt, seed_mcg, seed_mrg1, seed_mrg2,
                 heapq.heappush(eventos, (reloj + s, contador_eventos, EVENTO_FIN_SERVICIO))
                 contador_eventos += 1
             else:
+                # Cola vacía al volver → otra vacación. ESTO es lo que define
+                # "vacaciones MÚLTIPLES" (vs. una sola vacación al vaciarse).
                 v = gen_vacation_time(rng_vacacion, theta)
                 heapq.heappush(eventos, (reloj + v, contador_eventos, EVENTO_FIN_VACACION))
                 contador_eventos += 1
 
+        # Snapshot periódico para la curva de convergencia.
         if reloj >= t_inicio_stats and reloj >= next_snapshot:
             t_eff = reloj - t_inicio_stats
             if t_eff > 0 and clientes_servidos > 0:
@@ -330,14 +459,19 @@ def simular(lam, mu, theta, t_sim, seed_mt, seed_mcg, seed_mrg1, seed_mrg2,
                 })
             next_snapshot += snapshot_interval
 
+    # ----- Cierre: convertir áreas en promedios temporales -----
     t_efectivo = reloj - t_inicio_stats
     if t_efectivo <= 0:
-        t_efectivo = 1.0
+        t_efectivo = 1.0          # evita división por cero en corridas muy
+                                  # cortas (defensivo; no debería pasar en uso
+                                  # normal).
 
     l_sim = area_sistema / t_efectivo
     lq_sim = area_cola / t_efectivo
     rho_sim = area_ocupado / t_efectivo
     rho_vac = area_vacacion / t_efectivo
+    # W y Wq son promedios "por cliente", no integrales temporales — por eso
+    # se dividen por el número de clientes servidos, no por t_efectivo.
     w_sim = total_tiempo_sistema / clientes_servidos if clientes_servidos > 0 else 0
     wq_sim = total_espera / clientes_servidos if clientes_servidos > 0 else 0
 
@@ -354,27 +488,43 @@ def simular(lam, mu, theta, t_sim, seed_mt, seed_mcg, seed_mrg1, seed_mrg2,
 
 
 # ============================================================================
-# Ejecución de múltiples réplicas con intervalos de confianza
+# Ejecución de múltiples réplicas con intervalos de confianza.
 # ============================================================================
 
+# Valor crítico t-Student para n=10 réplicas, α=0.05 a dos colas (gl=9).
+# Se pre-hardcodea porque no se quiere depender de scipy en este proyecto.
 T_CRIT_9_0025 = 2.262
 
 
 def ejecutar_replicas(lam, mu, theta, t_sim, t_warmup, n_replicas=10,
                       base_seed=42, trace_eventos=0):
+    """Corre `n_replicas` simulaciones independientes y calcula intervalos
+    de confianza al 95% para cada métrica.
+
+    Cada réplica usa un cuádruple de semillas distinto, derivado de un MT19937
+    "maestro" alimentado por `base_seed`. Esto da independencia entre réplicas
+    a la vez que mantiene la corrida reproducible: con la misma `base_seed`,
+    los mismos números salen siempre.
+    """
     master = MersenneTwister(base_seed)
     resultados = []
 
     for r in range(n_replicas):
+        # Generamos cuatro semillas — una por PRNG de la réplica. El módulo en
+        # MCG y MRG asegura que la semilla cae en el rango admisible (1..M−1).
         s_mt = master.next_int()
         s_mcg = master.next_int() % (MCG.M - 1) + 1
         s_mrg1 = master.next_int() % (MRG.P - 1) + 1
         s_mrg2 = master.next_int() % (MRG.P - 1) + 1
 
+        # Sólo la primera réplica produce traza (la GUI la usa para mostrar
+        # el detalle paso a paso; las demás sólo aportan números).
         sim = simular(lam, mu, theta, t_sim, s_mt, s_mcg, s_mrg1, s_mrg2,
                       t_warmup, trace_eventos if r == 0 else 0)
         resultados.append(sim)
 
+    # Estadísticos por métrica: media muestral, desviación estándar muestral
+    # (denominador n-1) y semiamplitud del IC al 95% (t · s / √n).
     metricas_nombres = ["rho", "L", "Lq", "W", "Wq"]
     stats = {}
 
@@ -390,6 +540,8 @@ def ejecutar_replicas(lam, mu, theta, t_sim, t_warmup, n_replicas=10,
             "valores": vals,
         }
 
+    # Validación: comprobar si los valores analíticos quedan dentro del IC y
+    # si la ley de Little (L = λ·W, Lq = λ·Wq) se cumple en la simulación.
     analitico = calcular_analitico(lam, mu, theta)
     validacion = {}
 
@@ -397,6 +549,7 @@ def ejecutar_replicas(lam, mu, theta, t_sim, t_warmup, n_replicas=10,
         wq_a = analitico["Wq"]
         validacion["Wq_en_IC"] = stats["Wq"]["ci_lower"] <= wq_a <= stats["Wq"]["ci_upper"]
 
+        # Ley de Little aplicada al sistema completo: |L − λ·W|/L < 5%.
         l_media = stats["L"]["media"]
         w_media = stats["W"]["media"]
         if l_media > 0:
@@ -405,6 +558,7 @@ def ejecutar_replicas(lam, mu, theta, t_sim, t_warmup, n_replicas=10,
             little_L = 0
         validacion["Little_L"] = little_L < 0.05
 
+        # Ley de Little aplicada a la cola: |Lq − λ·Wq|/Lq < 5%.
         lq_media = stats["Lq"]["media"]
         wq_media = stats["Wq"]["media"]
         if lq_media > 0:
@@ -413,6 +567,8 @@ def ejecutar_replicas(lam, mu, theta, t_sim, t_warmup, n_replicas=10,
             little_Lq = 0
         validacion["Little_Lq"] = little_Lq < 0.05
 
+        # Tolerancia ajustada en utilización (es la métrica que más rápido
+        # converge, así que se le exige más precisión que a L/W).
         rho_media = stats["rho"]["media"]
         validacion["rho_precision"] = abs(rho_media - lam / mu) < 0.02
 
@@ -430,19 +586,30 @@ def ejecutar_replicas(lam, mu, theta, t_sim, t_warmup, n_replicas=10,
 
 
 # ============================================================================
-# Prueba Chi-Cuadrado de bondad de ajuste
+# Prueba Chi-Cuadrado de bondad de ajuste para Exp(tasa).
 # ============================================================================
 
 def chi_cuadrado_exp(datos, tasa, num_bins=6):
+    """Prueba χ² con bins **equiprobables** para H₀: datos ~ Exp(tasa).
+
+    La estrategia de bins equiprobables (no equiespaciados) es estándar en
+    Walpole/Myers: garantiza que el conteo esperado en cada bin sea n/k, lo
+    que estabiliza la varianza del estadístico y mejora la aproximación a χ².
+
+    Devuelve (chi2, chi2_crit, acepta, observados, esperados, edges).
+    """
     n = len(datos)
     if n == 0:
         return 0, 0, False, [], 0, []
 
+    # Construir los k bordes de bin como cuantiles de la exponencial:
+    #   F(x) = 1 − e^(−λx)  →  x_i = −ln(1 − i/k)/λ
     bin_edges = [0.0]
     for i in range(1, num_bins):
         bin_edges.append(-math.log(1 - i / num_bins) / tasa)
     bin_edges.append(float("inf"))
 
+    # Contar observaciones por bin.
     observados = [0] * num_bins
     for x in datos:
         for b in range(num_bins):
@@ -450,10 +617,16 @@ def chi_cuadrado_exp(datos, tasa, num_bins=6):
                 observados[b] += 1
                 break
 
-    esperados = n / num_bins
+    esperados = n / num_bins                 # constante por construcción
     chi2 = sum((o - esperados) ** 2 / esperados for o in observados)
+
+    # Grados de libertad: k − 1 (por la suma fija) − 1 (parámetro λ estimado).
+    # Aquí λ está dado por el usuario, así que estrictamente serían k−1; se
+    # deja k−2 por convención conservadora del curso.
     gl = num_bins - 1 - 1
 
+    # Tabla de χ² críticos al 95% (α=0.05). Se incluyen hasta gl=15 porque la
+    # GUI permite ajustar el número de bins; basta con eso para uso típico.
     chi2_criticos = {
         1: 3.841, 2: 5.991, 3: 7.815, 4: 9.488, 5: 11.070,
         6: 12.592, 7: 14.067, 8: 15.507, 9: 16.919, 10: 18.307,
@@ -465,13 +638,16 @@ def chi_cuadrado_exp(datos, tasa, num_bins=6):
 
 
 # ============================================================================
-# Reporte detallado académico
+# Reporte académico detallado en texto plano.
+# `print_fn` permite redirigir la salida (la GUI lo usa para escribir a un
+# StringIO en vez de a stdout).
 # ============================================================================
 
 def reporte_completo(sim, analitico, lam, mu, theta, t_sim, t_warmup, seeds,
                      replicas_result=None, print_fn=None):
     _print = print_fn or print
 
+    # Helpers locales para que cada sección tenga el mismo formato visual.
     def linea(c="═", n=72):
         _print(c * n)
 
@@ -483,6 +659,8 @@ def reporte_completo(sim, analitico, lam, mu, theta, t_sim, t_warmup, seeds,
         _print()
 
     def pct_error(s, a):
+        # Para métricas con valor analítico cero o infinito el porcentaje no
+        # tiene sentido — devolvemos "N/A" para no contaminar la tabla.
         if a == 0 or not math.isfinite(a):
             return "N/A"
         return f"{abs(s - a) / a * 100:.2f}%"
@@ -565,6 +743,9 @@ def reporte_completo(sim, analitico, lam, mu, theta, t_sim, t_warmup, seeds,
     _print("  └──────────────────────────────────────────────────────────────┘")
     _print()
 
+    # Demostración: regeneramos el PRNG con la misma semilla para imprimir los
+    # primeros 10 enteros que produciría — útil para verificar contra el
+    # reporte y reproducir paso a paso.
     mt_demo = MersenneTwister(seeds["mt"])
     _print("  Primeros 10 números uniformes U ~ (0,1) generados:")
     _print("  ┌──────┬──────────────┬──────────────────┐")
@@ -730,6 +911,7 @@ def reporte_completo(sim, analitico, lam, mu, theta, t_sim, t_warmup, seeds,
     _print("  siguen las distribuciones teóricas especificadas.")
     _print()
 
+    # 5000 muestras es suficiente para que el χ² sea sensible sin ser caro.
     n_test = 5000
 
     mt_test = MersenneTwister(seeds["mt"])
@@ -792,6 +974,9 @@ def reporte_completo(sim, analitico, lam, mu, theta, t_sim, t_warmup, seeds,
         _print("  └──────────┴─────────┴─────────┴─────────┴─────────┴─────────┘")
         _print()
 
+        # Gráfica ASCII de convergencia: cada línea es un snapshot, la barra '│'
+        # marca el valor teórico y '●' el observado en ese instante. Permite ver
+        # visualmente cómo la simulación se acerca al estacionario.
         _print("  Convergencia de ρ (utilización del servidor):")
         rho_teo = analitico["rho"]
         for s in snapshots:
@@ -860,6 +1045,8 @@ def reporte_completo(sim, analitico, lam, mu, theta, t_sim, t_warmup, seeds,
     _print("  └────────────────┴────────────────┴────────────────┴──────────────┘")
     _print()
 
+    # Error promedio entre simulación y teoría — un solo número para resumir
+    # la calidad de la corrida. <5% se considera buena en este curso.
     errores = []
     for _, s_val, a_val in metricas:
         if a_val != 0 and math.isfinite(a_val):
@@ -947,11 +1134,13 @@ def reporte_completo(sim, analitico, lam, mu, theta, t_sim, t_warmup, seeds,
 
 
 # ============================================================================
-# Punto de entrada principal
+# Punto de entrada principal — corrida desde línea de comandos.
+# La GUI no usa este bloque; tiene su propio entry point en
+# `simulacion_cafeteria_gui.py`.
 # ============================================================================
 
 if __name__ == "__main__":
-    # Parámetros del sistema (§3.2: cafetería universitaria, hora pico 12:30–14:30)
+    # Parámetros del sistema (§3.2: cafetería en hora pico 12:30–14:30).
     LAM = 0.5      # llegadas/min  (1 cliente cada 2 min en promedio)
     MU = 0.67      # servicios/min (1.49 min de servicio en promedio)
     THETA = 0.2    # retornos/min  (5 min de vacación en promedio)
@@ -963,6 +1152,8 @@ if __name__ == "__main__":
     T_SIM = 240    # 4 horas simuladas por réplica
     T_WARMUP = 0   # sin warm-up: se contabiliza el turno completo
 
+    # Semillas — fijas para reproducibilidad de los reportes académicos. Cambiar
+    # cualquiera produce una corrida distinta pero igualmente válida.
     SEED_MT = 19937
     SEED_MCG = 48271
     SEED_MRG1 = 31415
