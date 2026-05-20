@@ -53,6 +53,8 @@ class ModReplicas(Module):
     def render(self, state):
         rr = state.replicas_result
         stats, a = rr["stats"], rr["analitico"]
+        v = rr["validacion"]
+        es_estacionario = v.get("es_estacionario", False)
 
         # --- IC table ---
         table = Card(self.body, fg_color=t.BG_SOFT)
@@ -92,52 +94,94 @@ class ModReplicas(Module):
                 ).pack(side="left", padx=2)
         ctk.CTkFrame(table, fg_color="transparent", height=t.PAD_SM).pack()
 
+        # --- Regime banner ---
+        if not es_estacionario:
+            regime_card = Card(self.body, fg_color=t.BG_NARRATOR)
+            regime_card.pack(fill="x", pady=(0, t.PAD_MD))
+            ctk.CTkLabel(
+                regime_card,
+                text=(f"Régimen transitorio — ventana de observación: "
+                      f"{v.get('t_obs', 0):.0f} min, "
+                      f"~{v.get('clientes_medio', 0):.0f} clientes promedio por réplica. "
+                      "Las pruebas de estado estacionario (cobertura de Wq y precisión de ρ) "
+                      "se muestran como referencia, no como criterio de validación. "
+                      "La ley de Little sí aplica en régimen transitorio."),
+                font=t.font(t.SIZE_SMALL), text_color=t.TEXT,
+                anchor="w", justify="left", wraplength=860,
+            ).pack(fill="x", padx=t.PAD_MD, pady=t.PAD_SM)
+
         # --- Validation checks ---
         ctk.CTkLabel(
-            self.body, text="Validación del modelo (§ 8.4)",
+            self.body, text="Validación del simulador",
             font=t.font(t.SIZE_SMALL, "bold"), text_color=t.TEXT, anchor="w",
         ).pack(fill="x", pady=(0, t.PAD_XS))
 
-        v = rr["validacion"]
-        checks = [
-            ("Wq analítico cae dentro del IC 95 %",
-             v.get("Wq_en_IC", False), "",
-             "Si el IC cubre el valor teórico, el simulador no presenta sesgo "
-             "estadísticamente detectable en Wq."),
+        universal_checks = [
             ("Ley de Little:  L ≈ λ·W",
              v.get("Little_L", False),
              f"error {v.get('Little_L_valor', 0)*100:.2f} %",
-             "Verificación interna: independiente del modelo teórico, L debe ser "
-             "λ·W por la ley de Little. Si falla, algo está mal en el conteo."),
+             "Identidad universal de teoría de colas, válida en cualquier régimen. "
+             "Si falla, hay un error de implementación."),
             ("Ley de Little:  Lq ≈ λ·Wq",
              v.get("Little_Lq", False),
              f"error {v.get('Little_Lq_valor', 0)*100:.2f} %",
              "Idéntica verificación para la cola."),
+        ]
+
+        steady_checks = [
+            ("Wq analítico cae dentro del IC 95 %",
+             v.get("Wq_en_IC", False), "",
+             "Compara contra el valor teórico de estado estacionario (Haviv, Teorema 4.9). "
+             "Sólo es válida si la ventana de observación es suficientemente larga."),
             ("Precisión de ρ:  |ρ_sim − λ/μ| < 0.02",
              v.get("rho_precision", False),
              f"|Δ| = {v.get('rho_diff', 0):.4f}",
-             "La utilización converge exactamente a λ/μ por la condición de "
-             "estabilidad del modelo."),
+             "ρ converge a λ/μ en estado estacionario. En ventanas cortas, "
+             "el transitorio inicial sesga ρ hacia abajo."),
         ]
 
         passes = 0
-        for label, ok, detail, note in checks:
+        total = 0
+
+        # Universal checks always count
+        for label, ok, detail, note in universal_checks:
+            total += 1
             if ok:
                 passes += 1
             self._check_row(label, ok, detail, note)
 
+        if es_estacionario:
+            for label, ok, detail, note in steady_checks:
+                total += 1
+                if ok:
+                    passes += 1
+                self._check_row(label, ok, detail, note)
+        else:
+            for label, ok, detail, note in steady_checks:
+                self._info_row(label, ok, detail, note)
+
         self.header.pill.set(
-            "done" if passes == 4 else "warn",
-            text=f"{passes}/4 pruebas pasan",
+            "done" if passes == total else "warn",
+            text=f"{passes}/{total} pruebas pasan",
         )
 
+        if es_estacionario:
+            explain_body = (
+                "Los IC al 95 % se construyen con la t de Student (gl=9, t=2.262) "
+                "sobre las 10 medias replicadas. La ventana de observación es "
+                "suficientemente larga para comparar con el modelo analítico de "
+                "estado estacionario: las cuatro pruebas son criterio de validación.")
+        else:
+            explain_body = (
+                "Los IC al 95 % se construyen con la t de Student (gl=9, t=2.262) "
+                "sobre las 10 medias replicadas. La ventana de observación es corta "
+                "(régimen transitorio): sólo la ley de Little — que es una identidad "
+                "universal, no una propiedad de estado estacionario — se usa como "
+                "criterio de validación. Las comparaciones contra el valor analítico "
+                "se muestran como referencia.")
+
         ExplainBox(
-            self.body,
-            body=("Los IC al 95 % se construyen con la t de Student (gl=9, t=2.262) "
-                  "sobre las 10 medias replicadas, usando semillas independientes "
-                  "generadas a partir de la semilla maestra. La cobertura del IC y "
-                  "las dos pruebas de Little son condiciones suficientes para "
-                  "considerar validado el simulador."),
+            self.body, body=explain_body,
             title="Cómo se construye este módulo",
         ).pack(fill="x", pady=(t.PAD_MD, t.PAD_MD))
 
@@ -172,23 +216,27 @@ class ModReplicas(Module):
             "reduce el semi-ancho a la mitad. Es un trade-off costo/precisión.",
         ])
 
-        tb3 = TechBlock(self.body, "Ficha técnica — Las cuatro pruebas como condición suficiente")
+        tb3 = TechBlock(self.body, "Ficha técnica — Pruebas de validación")
         tb3.pack(fill="x", pady=(0, 0))
+        tb3.add_subtitle("Pruebas universales (siempre aplican)")
         tb3.add_bullets([
-            ("Cobertura (1):", "valida el simulador contra el modelo teórico — "
-             "si el IC cubre el valor analítico, no hay sesgo detectable."),
-            ("Little L (2):", "verificación interna independiente del modelo: "
-             "L = λ·W es identidad universal de teoría de colas. Detecta errores "
-             "de conteo aunque el modelo teórico estuviera mal."),
-            ("Little Lq (3):", "idéntica para la cola; refuerza la (2)."),
-            ("Precisión ρ (4):", "ρ_sim debe coincidir con λ/μ en cualquier "
-             "modelo M/M/1 (con o sin vacaciones). Detecta errores en el conteo "
-             "del tiempo ocupado del servidor."),
+            ("Little L:", "L = λ·W es una identidad universal de teoría de colas. "
+             "No requiere estado estacionario — aplica a cualquier sistema en "
+             "cualquier régimen. Detecta errores de conteo."),
+            ("Little Lq:", "idéntica para la cola; refuerza la anterior."),
         ])
-        tb3.add_text("Las cuatro juntas chequean: (a) coherencia con el modelo "
-                     "teórico, (b) coherencia interna del simulador (Little), y "
-                     "(c) coherencia del estimador más básico (ρ). Si las cuatro "
-                     "pasan, el profesor no tiene base estadística para dudar.",
+        tb3.add_subtitle("Pruebas de estado estacionario (requieren ventana larga)")
+        tb3.add_bullets([
+            ("Cobertura Wq:", "compara la simulación contra el valor analítico de "
+             "Haviv (Teorema 4.9). Sólo es válida cuando la simulación ha "
+             "convergido al régimen estacionario."),
+            ("Precisión ρ:", "ρ_sim converge a λ/μ en estado estacionario. En "
+             "ventanas cortas, el transitorio inicial (cola vacía) sesga ρ "
+             "hacia abajo — es comportamiento esperado, no un error."),
+        ])
+        tb3.add_text("En ventanas cortas (régimen transitorio), sólo las pruebas "
+                     "universales son criterio de validación. Las de estado "
+                     "estacionario se muestran como referencia informativa.",
                      muted=True)
 
     def _check_row(self, label, ok, detail, note):
@@ -210,6 +258,35 @@ class ModReplicas(Module):
         ctk.CTkLabel(
             top, text=label, font=t.font(t.SIZE_SMALL),
             text_color=t.TEXT, anchor="w",
+        ).pack(side="left", padx=t.PAD_SM)
+        if detail:
+            ctk.CTkLabel(
+                top, text=detail, font=t.mono(t.SIZE_MONO_SMALL),
+                text_color=t.TEXT_MUTED, anchor="e",
+            ).pack(side="right")
+
+        ctk.CTkLabel(
+            card, text=note, font=t.font(t.SIZE_TINY),
+            text_color=t.TEXT_SUBTLE, anchor="w", justify="left", wraplength=820,
+        ).pack(fill="x", padx=t.PAD_MD, pady=(2, t.PAD_SM))
+
+    def _info_row(self, label, ok, detail, note):
+        """Fila informativa para pruebas de estado estacionario en régimen
+        transitorio: muestra el resultado pero marcado como 'ref', no como
+        pasa/falla. No cuenta para el total de pruebas."""
+        card = Card(self.body, fg_color=t.BG_SOFT)
+        card.pack(fill="x", pady=(0, t.PAD_XS))
+
+        top = ctk.CTkFrame(card, fg_color="transparent")
+        top.pack(fill="x", padx=t.PAD_MD, pady=(t.PAD_SM, 0))
+
+        ctk.CTkLabel(
+            top, text="ref", font=t.mono(t.SIZE_MONO_SMALL, "bold"),
+            text_color=t.TEXT_SUBTLE, width=50, anchor="w",
+        ).pack(side="left")
+        ctk.CTkLabel(
+            top, text=label, font=t.font(t.SIZE_SMALL),
+            text_color=t.TEXT_MUTED, anchor="w",
         ).pack(side="left", padx=t.PAD_SM)
         if detail:
             ctk.CTkLabel(

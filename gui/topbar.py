@@ -44,8 +44,29 @@ class TopBar(ctk.CTkFrame):
                                     width=70, on_change=self._sync_rho)
         self.f_theta.pack(side="left", padx=(0, t.PAD_MD))
 
-        self.f_tsim = CompactField(row1, "T", self.state.t_sim, width=90)
-        self.f_tsim.pack(side="left", padx=(0, t.PAD_MD))
+        ctk.CTkLabel(
+            row1, text="|", font=t.font(t.SIZE_BODY),
+            text_color=t.BORDER,
+        ).pack(side="left", padx=(0, t.PAD_SM))
+
+        ctk.CTkLabel(
+            row1, text="Turno", font=t.font(t.SIZE_SMALL, "bold"),
+            text_color=t.TEXT_MUTED,
+        ).pack(side="left", padx=(0, 4))
+
+        self.f_turno = CompactField(row1, "", self.state.turno, width=60)
+        self.f_turno.pack(side="left", padx=(0, t.PAD_SM))
+
+        self.f_obs_desde = CompactField(row1, "Obs.", self.state.obs_desde, width=60)
+        self.f_obs_desde.pack(side="left", padx=(0, 4))
+
+        ctk.CTkLabel(
+            row1, text="a", font=t.font(t.SIZE_SMALL),
+            text_color=t.TEXT_MUTED,
+        ).pack(side="left", padx=(0, 4))
+
+        self.f_obs_hasta = CompactField(row1, "", self.state.obs_hasta, width=60)
+        self.f_obs_hasta.pack(side="left", padx=(0, t.PAD_MD))
 
         self.var_replicas = ctk.BooleanVar(value=self.state.run_replicas)
         ctk.CTkCheckBox(
@@ -142,15 +163,18 @@ class TopBar(ctk.CTkFrame):
             lam = float(self.f_lam.get())
             mu = float(self.f_mu.get())
             theta = float(self.f_theta.get())
-            t_sim = float(self.f_tsim.get())
-            # Las cuatro tasas y T deben ser estrictamente positivas: la
-            # transformada inversa exponencial diverge si la tasa es 0 o
-            # negativa, y T ≤ 0 no permite simular nada.
-            assert lam > 0 and mu > 0 and theta > 0 and t_sim > 0
+            turno = float(self.f_turno.get())
+            obs_desde = float(self.f_obs_desde.get())
+            obs_hasta = float(self.f_obs_hasta.get())
+            assert lam > 0 and mu > 0 and theta > 0
+            assert turno > 0 and obs_hasta > obs_desde >= 0
+            assert obs_hasta <= turno
             self.state.lam = lam
             self.state.mu = mu
             self.state.theta = theta
-            self.state.t_sim = t_sim
+            self.state.turno = turno
+            self.state.obs_desde = obs_desde
+            self.state.obs_hasta = obs_hasta
             self.state.seed_mt = int(self.f_mt.get())
             self.state.seed_lcg = int(self.f_lcg.get())
             self.state.seed_mrg1 = int(self.f_mrg1.get())

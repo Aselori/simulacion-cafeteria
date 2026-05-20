@@ -36,8 +36,9 @@ class SimulationState:
     lam: float = 0.5            # tasa de llegada (clientes/min)
     mu: float = 0.67            # tasa de servicio (servicios/min)
     theta: float = 0.2          # tasa de retorno de vacación (retornos/min)
-    t_sim: float = 10000.0      # horizonte de simulación en minutos
-    t_warmup: float = 0.0       # warm-up; 0 = se contabiliza desde t=0
+    turno: float = 120.0        # duración total del turno en minutos (2 h de grabación)
+    obs_desde: float = 0.0      # inicio de la ventana de observación (min desde inicio)
+    obs_hasta: float = 120.0    # fin de la ventana de observación (min desde inicio)
     seed_mt: int = 19937
     seed_lcg: int = 48271
     seed_mrg1: int = 31415
@@ -154,14 +155,14 @@ class App(ctk.CTk):
             # eventos) se solicita para que el módulo de eventos tenga algo
             # que mostrar; las réplicas no necesitan traza propia.
             sim = simular(
-                s.lam, s.mu, s.theta, s.t_sim,
+                s.lam, s.mu, s.theta, s.obs_hasta,
                 s.seed_mt, s.seed_lcg, s.seed_mrg1, s.seed_mrg2,
-                t_warmup=s.t_warmup, trace_eventos=25,
+                t_warmup=s.obs_desde, trace_eventos=25,
             )
             replicas_result = None
             if s.run_replicas:
                 replicas_result = ejecutar_replicas(
-                    s.lam, s.mu, s.theta, s.t_sim, s.t_warmup,
+                    s.lam, s.mu, s.theta, s.obs_hasta, s.obs_desde,
                     n_replicas=10, base_seed=42, trace_eventos=0,
                 )
             # `after(0, ...)` salta al hilo principal de Tk — actualizar

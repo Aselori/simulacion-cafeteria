@@ -22,7 +22,6 @@ import math
 import heapq
 from collections import deque
 
-
 # ============================================================================
 # PRNG 1: Mersenne Twister (MT19937) — Matsumoto y Nishimura (1998)
 # ============================================================================
@@ -540,14 +539,22 @@ def ejecutar_replicas(lam, mu, theta, t_sim, t_warmup, n_replicas=10,
             "valores": vals,
         }
 
-    # Validación: comprobar si los valores analíticos quedan dentro del IC y
-    # si la ley de Little (L = λ·W, Lq = λ·Wq) se cumple en la simulación.
+    # Validación: pruebas universales (Little) + pruebas de estado estacionario
+    # (cobertura de Wq, precisión de ρ) que sólo aplican cuando la ventana de
+    # observación es lo suficientemente larga.
     analitico = calcular_analitico(lam, mu, theta)
     validacion = {}
 
+    t_obs = t_sim - t_warmup
+    clientes_medio = sum(r["clientes_servidos"] for r in resultados) / n_replicas
+    es_estacionario = t_obs >= 500 and clientes_medio >= 150
+
+    validacion["es_estacionario"] = es_estacionario
+    validacion["t_obs"] = t_obs
+    validacion["clientes_medio"] = clientes_medio
+
     if analitico["estable"]:
-        wq_a = analitico["Wq"]
-        validacion["Wq_en_IC"] = stats["Wq"]["ci_lower"] <= wq_a <= stats["Wq"]["ci_upper"]
+        # --- Pruebas universales (siempre aplican) ---
 
         # Ley de Little aplicada al sistema completo: |L − λ·W|/L < 5%.
         l_media = stats["L"]["media"]
@@ -567,13 +574,16 @@ def ejecutar_replicas(lam, mu, theta, t_sim, t_warmup, n_replicas=10,
             little_Lq = 0
         validacion["Little_Lq"] = little_Lq < 0.05
 
-        # Tolerancia ajustada en utilización (es la métrica que más rápido
-        # converge, así que se le exige más precisión que a L/W).
-        rho_media = stats["rho"]["media"]
-        validacion["rho_precision"] = abs(rho_media - lam / mu) < 0.02
-
         validacion["Little_L_valor"] = little_L
         validacion["Little_Lq_valor"] = little_Lq
+
+        # --- Pruebas de estado estacionario (sólo cuando hay suficientes datos) ---
+
+        wq_a = analitico["Wq"]
+        validacion["Wq_en_IC"] = stats["Wq"]["ci_lower"] <= wq_a <= stats["Wq"]["ci_upper"]
+
+        rho_media = stats["rho"]["media"]
+        validacion["rho_precision"] = abs(rho_media - lam / mu) < 0.02
         validacion["rho_diff"] = abs(rho_media - lam / mu)
 
     return {
@@ -1145,12 +1155,12 @@ if __name__ == "__main__":
     MU = 0.67      # servicios/min (1.49 min de servicio en promedio)
     THETA = 0.2    # retornos/min  (5 min de vacación en promedio)
 
-    # Estrategia de simulación: se mide el turno completo (hora pico 12:30–14:30,
-    # extendido a 4 horas). No se descarta período de calentamiento porque el
-    # objetivo es caracterizar el turno transitorio, no el régimen estacionario:
-    # la fila inicia vacía igual que en la operación real.
-    T_SIM = 240    # 4 horas simuladas por réplica
-    T_WARMUP = 0   # sin warm-up: se contabiliza el turno completo
+    # Estrategia de simulación: turno de 12 horas (8am–8pm), ventana de
+    # observación de 1pm a 2pm (minuto 300 a 420). Los primeros 300 min se
+    # simulan normalmente (llegan clientes, se atienden, hay vacaciones) pero
+    # las estadísticas sólo se recolectan dentro de la ventana de observación.
+    T_SIM = 120      # 2 horas de grabación observada
+    T_WARMUP = 0     # observar desde el inicio de la grabación
 
     # Semillas — fijas para reproducibilidad de los reportes académicos. Cambiar
     # cualquiera produce una corrida distinta pero igualmente válida.
